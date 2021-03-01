@@ -101,7 +101,15 @@
               </a-col>
 
               <a-col :md="8" :xs="24" style="margin-bottom: 12px;">
-                <template v-if="item.dictCode">
+                <!-- 下拉搜索 -->
+                <j-search-select-tag v-if="item.type==='sel_search'" v-model="item.val" :dict="getDictInfo(item)" placeholder="请选择"/>
+                <!-- 下拉多选 -->
+                <template v-else-if="item.type==='list_multi'">
+                  <j-multi-select-tag v-if="item.options" v-model="item.val" :options="item.options" placeholder="请选择"/>
+                  <j-multi-select-tag v-else v-model="item.val" :dictCode="getDictInfo(item)" placeholder="请选择"/>
+                </template>
+
+                <template v-else-if="item.dictCode">
                   <template v-if="item.type === 'table-dict'">
                     <j-popup
                       v-model="item.val"
@@ -109,6 +117,7 @@
                       :field="item.dictCode"
                       :orgFields="item.dictCode"
                       :destFields="item.dictCode"
+                      :multi="true"
                     ></j-popup>
                   </template>
                   <template v-else>
@@ -116,7 +125,13 @@
                     <j-dict-select-tag v-show="!allowMultiple(item)" v-model="item.val" :dictCode="item.dictCode" placeholder="请选择"/>
                   </template>
                 </template>
-                <j-popup v-else-if="item.type === 'popup'" :value="item.val" v-bind="item.popup" group-id="superQuery" @input="(e,v)=>handleChangeJPopup(item,e,v)"/>
+                <j-popup
+                  v-else-if="item.type === 'popup'"
+                  :value="item.val"
+                  v-bind="item.popup"
+                  group-id="superQuery"
+                  @input="(e,v)=>handleChangeJPopup(item,e,v)"
+                  :multi="true"/>
                 <j-select-multi-user
                   v-else-if="item.type === 'select-user' || item.type === 'sel_user'"
                   v-model="item.val"
@@ -145,6 +160,10 @@
                 <j-date v-else-if=" item.type=='datetime' " v-model="item.val" placeholder="请选择时间" :show-time="true" date-format="YYYY-MM-DD HH:mm:ss" style="width: 100%"></j-date>
                 <a-time-picker v-else-if="item.type==='time'" :value="item.val ? moment(item.val,'HH:mm:ss') : null" format="HH:mm:ss" style="width: 100%" @change="(time,value)=>item.val=value"/>
                 <a-input-number v-else-if=" item.type=='int'||item.type=='number' " style="width: 100%" placeholder="请输入数值" v-model="item.val"/>
+                <a-select v-else-if="item.type=='switch'" placeholder="请选择" v-model="item.val">
+                  <a-select-option value="Y">是</a-select-option>
+                  <a-select-option value="N">否</a-select-option>
+                </a-select>
                 <a-input v-else v-model="item.val" placeholder="请输入值"/>
               </a-col>
 
@@ -334,6 +353,17 @@
         }
         this.visible = true
       },
+
+      getDictInfo(item) {
+        let str = ''
+        if(!item.dictTable){
+          str = item.dictCode
+        }else{
+          str = item.dictTable+','+item.dictText+','+item.dictCode
+        }
+        console.log('高级查询字典信息',str)
+        return str
+      },
       handleOk() {
         if (!this.isNullArray(this.queryParamsModel)) {
           let event = {
@@ -382,11 +412,12 @@
         this.queryParamsModel.splice(index, 1)
       },
       handleSelected(node, item) {
-        let { type, options, dictCode, dictTable, customReturnField, popup } = node.dataRef
+        let { type, options, dictCode, dictTable, dictText, customReturnField, popup } = node.dataRef
         item['type'] = type
         item['options'] = options
         item['dictCode'] = dictCode
         item['dictTable'] = dictTable
+        item['dictText'] = dictText
         item['customReturnField'] = customReturnField
         if (popup) {
           item['popup'] = popup
@@ -494,10 +525,9 @@
           } else {
             if (Array.isArray(item.options)) {
               // 如果有字典属性，就不需要保存 options 了
-              if (item.dictCode) {
-                // 去掉特殊属性
-                delete item.options
-              }
+              //update-begin-author:taoyan date:20200819 for:【开源问题】 高级查询 下拉框作为并且选项很多多多 LOWCOD-779
+              delete item.options
+              //update-end-author:taoyan date:20200819 for:【开源问题】 高级查询 下拉框作为并且选项很多多多 LOWCOD-779
             }
           }
         }
@@ -508,8 +538,17 @@
       renderSaveTreeData(item) {
         item.icon = this.treeIcon
         item.originTitle = item['title']
-        item.title = (fn, vNode) => {
-          let { originTitle } = vNode.dataRef
+        item.title = (arg1, arg2) => {
+          let vNode
+          // 兼容旧版的Antdv
+          if (arg1.dataRef) {
+            vNode = arg1
+          } else if (arg2.dataRef) {
+            vNode = arg2
+          } else {
+            return <span style="color:red;">Antdv版本不支持</span>
+          }
+          let {originTitle} = vNode.dataRef
           return (
             <div class="j-history-tree-title">
               <span>{originTitle}</span>

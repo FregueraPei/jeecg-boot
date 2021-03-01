@@ -1,5 +1,5 @@
 <!-- JEditableTable -->
-<!-- @version 1.5.0 -->
+<!-- @version 1.6.1 -->
 <!-- @author sjlei -->
 <template>
   <a-spin :spinning="loading">
@@ -11,13 +11,13 @@
       <a-col>
         <!-- 操作按钮 -->
         <div v-if="actionButton" class="action-button">
-          <a-button type="primary" icon="plus" @click="handleClickAdd" :disabled="disabled">新增</a-button>
+          <a-button v-if="buttonPermission('add')" type="primary" icon="plus" @click="handleClickAdd" :disabled="disabled">新增</a-button>
           <span class="gap"></span>
           <template v-if="selectedRowIds.length>0">
             <a-popconfirm
               :title="`确定要删除这 ${selectedRowIds.length} 项吗?`"
               @confirm="handleConfirmDelete">
-              <a-button type="primary" icon="minus" :disabled="disabled">删除</a-button>
+              <a-button v-if="buttonPermission('batch_delete')" type="primary" icon="minus" :disabled="disabled">删除</a-button>
               <span class="gap"></span>
             </a-popconfirm>
             <template v-if="showClearSelectButton">
@@ -39,7 +39,7 @@
       <div class="thead" ref="thead">
         <div class="tr" :style="{width: this.realTrWidth}">
           <!-- 左侧固定td  -->
-          <div v-if="dragSort" class="td td-ds" :style="style.tdLeftDs">
+          <div v-if="dragSort" class="td td-ds" :style="style.tdLeft">
             <span></span>
           </div>
           <div v-if="rowSelection" class="td td-cb" :style="style.tdLeft">
@@ -99,10 +99,12 @@
                 class="tr"
                 :class="selectedRowIds.indexOf(row.id) !== -1 ? 'tr-checked' : ''"
                 :style="buildTrStyle(rowIndex)"
-                :key="row.id">
+                :key="row.id"
+                @click="handleClickTableRow"
+              >
                 <!-- 左侧固定td  -->
 
-                <div v-if="dragSort" class="td td-ds" :style="style.tdLeftDs">
+                <div v-if="dragSort" class="td td-ds" :style="style.tdLeft" @dblclick="_handleRowInsertDown(rowIndex)" >
                   <a-dropdown :trigger="['click']" :getPopupContainer="getParentContainer">
                     <div class="td-ds-icons">
                       <a-icon type="align-left"/>
@@ -144,27 +146,23 @@
 
                     <!-- native input -->
                     <label :key="i" v-if="col.type === formTypes.input || col.type === formTypes.inputNumber">
-                      <a-tooltip
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer"
-                      >
-
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
                         <input
+                          v-if="isEditRow(row, col)"
                           :id="id"
                           v-bind="buildProps(row,col)"
                           :data-input-number="col.type === formTypes.inputNumber"
                           :placeholder="replaceProps(col, col.placeholder)"
                           @blur="(e)=>{handleBlurCommono(e.target,rowIndex,row,col)}"
                           @input="(e)=>{handleInputCommono(e.target,rowIndex,row,col)}"
-                          @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                          @mouseout="()=>{handleMouseoutCommono(row,col)}"/>
-
+                        />
+                        <span
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click="handleEditRow(row, col)"
+                        >{{ inputValues[rowIndex][col.key] }}</span>
                       </a-tooltip>
-
                     </label>
                     <!-- checkbox -->
                     <template v-else-if="col.type === formTypes.checkbox">
@@ -178,21 +176,9 @@
                     </template>
                     <!-- select -->
                     <template v-else-if="col.type === formTypes.select">
-                      <a-tooltip
-                        :key="i"
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer"
-                      >
-
-                      <span
-                        @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                        @mouseout="()=>{handleMouseoutCommono(row,col)}">
-
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
                         <a-select
+                          v-if="isEditRow(row, col)"
                           :id="id"
                           :key="i"
                           v-bind="buildProps(row,col)"
@@ -202,36 +188,74 @@
                           :getPopupContainer="getParentContainer"
                           :placeholder="replaceProps(col, col.placeholder)"
                           :filterOption="(i,o)=>handleSelectFilterOption(i,o,col)"
+                          :maxTagCount="1"
                           @change="(v)=>handleChangeSelectCommon(v,id,row,col)"
                           @search="(v)=>handleSearchSelect(v,id,row,col)"
                           @blur="(v)=>handleBlurSearch(v,id,row,col)"
                           allowClear
-                        >
-
-                          <!--<template v-for="(opt,optKey) in col.options">-->
-                          <!--<a-select-option :value="opt.value" :key="optKey">{{ opt.title }}</a-select-option>-->
-                          <!--</template>-->
-                        </a-select>
-                      </span>
+                        />
+                        <span
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click.stop="handleEditRow(row, col)"
+                        >{{ getSelectTranslateText(selectValues[id], row, col) }}</span>
                       </a-tooltip>
                     </template>
+
+                    <!-- 部门选择 -->
+                    <template v-else-if="col.type === formTypes.sel_depart">
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                        <j-select-depart
+                          v-if="isEditRow(row, col)"
+                          :id="id"
+                          :key="i"
+                          v-bind="buildProps(row,col)"
+                          style="width: 100%;"
+                          :value="departCompValues[id]"
+                          :placeholder="replaceProps(col, col.placeholder)"
+                          :trigger-change="true"
+                          :multi="true"
+                          @change="(v)=>handleChangeDepartCommon(v,id,row,col)"
+                        />
+                        <span
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click="handleEditRow(row, col)"
+                        >{{ departCompValues[id] }}</span>
+                      </a-tooltip>
+                    </template>
+
+                    <!-- 用户选择 -->
+                    <template v-else-if="col.type === formTypes.sel_user">
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                        <j-select-user-by-dep
+                          v-if="isEditRow(row, col)"
+                          :id="id"
+                          :key="i"
+                          v-bind="buildProps(row,col)"
+                          style="width: 100%;"
+                          :value="userCompValues[id]"
+                          :placeholder="replaceProps(col, col.placeholder)"
+                          :trigger-change="true"
+                          :multi="true"
+                          @change="(v)=>handleChangeUserCommon(v,id,row,col)"
+                        />
+                        <span
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click="handleEditRow(row, col)"
+                        >{{ userCompValues[id] }}</span>
+                      </a-tooltip>
+                    </template>
+
                     <!-- date -->
                     <template v-else-if="col.type === formTypes.date || col.type === formTypes.datetime">
-                      <a-tooltip
-                        :key="i"
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer"
-                      >
-
-                      <span
-                        @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                        @mouseout="()=>{handleMouseoutCommono(row,col)}">
-
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
                         <j-date
+                          v-if="isEditRow(row, col)"
                           :id="id"
                           :key="i"
                           v-bind="buildProps(row,col)"
@@ -243,42 +267,42 @@
                           :showTime="col.type === formTypes.datetime"
                           :dateFormat="col.type === formTypes.date? 'YYYY-MM-DD':'YYYY-MM-DD HH:mm:ss'"
                           allowClear
-                          @change="(v)=>handleChangeJDateCommon(v,id,row,col,col.type === formTypes.datetime)"/>
-
-                      </span>
+                          @change="(v)=>handleChangeJDateCommon(v,id,row,col,col.type === formTypes.datetime)"
+                        />
+                        <span
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click="handleEditRow(row, col)"
+                        >{{ jdateValues[id] }}</span>
                       </a-tooltip>
                     </template>
-
                     <!-- input_pop -->
                     <template v-else-if="col.type === formTypes.input_pop">
-                      <a-tooltip
-                        :key="i"
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer">
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                        <j-input-pop
+                          v-if="isEditRow(row, col)"
+                          :id="id"
+                          :key="i"
+                          :width="300"
+                          :height="210"
+                          :pop-container="`${caseId}tbody`"
+                          v-bind="buildProps(row,col)"
+                          style="width: 100%;"
+                          :value="jInputPopValues[id]"
+                          :getCalendarContainer="getParentContainer"
+                          :placeholder="replaceProps(col, col.placeholder)"
+                          @change="(v)=>handleChangeJInputPopCommon(v,id,row,col)"
+                        />
                         <span
-                          @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                          @mouseout="()=>{handleMouseoutCommono(row,col)}">
-                          <j-input-pop
-                            :id="id"
-                            :key="i"
-                            :width="300"
-                            :height="210"
-                            :pop-container="`${caseId}tbody`"
-                            v-bind="buildProps(row,col)"
-                            style="width: 100%;"
-                            :value="jInputPopValues[id]"
-                            :getCalendarContainer="getParentContainer"
-                            :placeholder="replaceProps(col, col.placeholder)"
-                            @change="(v)=>handleChangeJInputPopCommon(v,id,row,col)">
-                          </j-input-pop>
-                        </span>
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click="handleEditRow(row, col)"
+                        >{{ jInputPopValues[id] }}</span>
                       </a-tooltip>
                     </template>
-
+                    <!-- upload -->
                     <div v-else-if="col.type === formTypes.upload" :key="i">
                       <template v-if="uploadValues[id] != null" v-for="(file,fileKey) of [(uploadValues[id]||{})]">
                         <a-input
@@ -323,32 +347,19 @@
                       </template>
 
                       <div :hidden="uploadValues[id] != null">
-                        <a-tooltip
-                          :key="i"
-                          :id="id"
-                          placement="top"
-                          :title="(tooltips[id] || {}).title"
-                          :visible="(tooltips[id] || {}).visible || false"
-                          :autoAdjustOverflow="true"
-                          :getPopupContainer="getParentContainer"
-                        >
-
-                          <span
-                            @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                            @mouseout="()=>{handleMouseoutCommono(row,col)}">
-                            <a-upload
-                              name="file"
-                              :data="{'isup':1}"
-                              :multiple="false"
-                              :action="col.action"
-                              :headers="uploadGetHeaders(row,col)"
-                              :showUploadList="false"
-                              v-bind="buildProps(row,col)"
-                              @change="(v)=>handleChangeUpload(v,id,row,col)"
-                            >
-                              <a-button icon="upload">{{ col.placeholder }}</a-button>
-                            </a-upload>
-                          </span>
+                        <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                          <a-upload
+                            name="file"
+                            :data="{'isup':1}"
+                            :multiple="false"
+                            :action="col.action"
+                            :headers="uploadGetHeaders(row,col)"
+                            :showUploadList="false"
+                            v-bind="buildProps(row,col)"
+                            @change="(v)=>handleChangeUpload(v,id,row,col)"
+                          >
+                            <a-button icon="upload">{{ col.placeholder }}</a-button>
+                          </a-upload>
                         </a-tooltip>
                       </div>
 
@@ -356,34 +367,28 @@
 
                     <!-- update-begin-author:taoyan date:0827 for：popup -->
                     <template v-else-if="col.type === formTypes.popup">
-                      <a-tooltip
-                        :key="i"
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer"
-                      >
-
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                        <j-popup
+                          v-if="isEditRow(row, col)"
+                          :id="id"
+                          :key="i"
+                          v-bind="buildProps(row,col)"
+                          :placeholder="replaceProps(col, col.placeholder)"
+                          style="width: 100%;"
+                          :value="getPopupValue(id)"
+                          :field="col.field || col.key"
+                          :org-fields="col.orgFields"
+                          :dest-fields="col.destFields"
+                          :code="col.popupCode"
+                          :groupId="caseId"
+                          @input="(value,others)=>popupCallback(value,others,id,row,col,rowIndex)"
+                        />
                         <span
-                          @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                          @mouseout="()=>{handleMouseoutCommono(row,col)}">
-
-                          <j-popup
-                            :id="id"
-                            :key="i"
-                            v-bind="buildProps(row,col)"
-                            :placeholder="replaceProps(col, col.placeholder)"
-                            style="width: 100%;"
-                            :value="getPopupValue(id)"
-                            :field="col.field || col.key"
-                            :org-fields="col.orgFields"
-                            :dest-fields="col.destFields"
-                            :code="col.popupCode"
-                            :groupId="caseId"
-                            @input="(value,others)=>popupCallback(value,others,id,row,col,rowIndex)"/>
-                        </span>
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click="handleEditRow(row, col)"
+                        >{{ getPopupValue(id) }}</span>
                       </a-tooltip>
                     </template>
                     <!-- update-end-author:taoyan date:0827 for：popup -->
@@ -420,7 +425,7 @@
                                 <a-menu-item @click="handleClickDelFile(id)">
                                   <span><a-icon type="delete"/>&nbsp;删除</span>
                                 </a-menu-item>
-                                <a-menu-item @click="handleMoreOperation(id)">
+                                <a-menu-item @click="handleMoreOperation(id,col,col)">
                                   <span><a-icon type="bars" /> 更多</span>
                                 </a-menu-item>
                               </a-menu>
@@ -430,32 +435,19 @@
                       </template>
 
                       <div :hidden="uploadValues[id] != null">
-                        <a-tooltip
-                          :key="i"
-                          :id="id"
-                          placement="top"
-                          :title="(tooltips[id] || {}).title"
-                          :visible="(tooltips[id] || {}).visible || false"
-                          :autoAdjustOverflow="true"
-                          :getPopupContainer="getParentContainer"
-                        >
-
-                          <span
-                            @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                            @mouseout="()=>{handleMouseoutCommono(row,col)}">
-                            <a-upload
-                              name="file"
-                              :data="{'isup':1}"
-                              :multiple="false"
-                              :action="getUploadAction(col.action)"
-                              :headers="uploadGetHeaders(row,col)"
-                              :showUploadList="false"
-                              v-bind="buildProps(row,col)"
-                              @change="(v)=>handleChangeUpload(v,id,row,col)"
-                            >
-                              <a-button icon="upload">上传文件</a-button>
-                            </a-upload>
-                          </span>
+                        <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                          <a-upload
+                            name="file"
+                            :data="{'isup':1}"
+                            :multiple="false"
+                            :action="getUploadAction(col.action)"
+                            :headers="uploadGetHeaders(row,col)"
+                            :showUploadList="false"
+                            v-bind="buildProps(row,col)"
+                            @change="(v)=>handleChangeUpload(v,id,row,col)"
+                          >
+                            <a-button icon="upload">上传文件</a-button>
+                          </a-upload>
                         </a-tooltip>
                       </div>
 
@@ -468,7 +460,7 @@
                             <a-icon type="loading"/>
                           </template>
                           <template v-else-if="uploadValues[id]['path']">
-                            <img class="j-editable-image" :src="getCellImageView(id)" alt="无图片" @click="handleMoreOperation(id,'img')"/>
+                            <img class="j-editable-image" :src="getCellImageView(id)" alt="无图片" @click="handleMoreOperation(id,'img',col)"/>
                           </template>
                           <template v-else>
                             <a-icon type="exclamation-circle" style="color: red;" @click="handleClickShowImageError(id)"/>
@@ -501,7 +493,7 @@
                                 <a-menu-item @click="handleClickDelFile(id)">
                                   <span><a-icon type="delete"/>&nbsp;删除</span>
                                 </a-menu-item>
-                                <a-menu-item @click="handleMoreOperation(id,'img')">
+                                <a-menu-item @click="handleMoreOperation(id,'img',col)">
                                   <span><a-icon type="bars" /> 更多</span>
                                 </a-menu-item>
                               </a-menu>
@@ -512,169 +504,113 @@
                       </template>
 
                       <div :hidden="uploadValues[id] != null">
-                        <a-tooltip
-                          :key="i"
-                          :id="id"
-                          placement="top"
-                          :title="(tooltips[id] || {}).title"
-                          :visible="(tooltips[id] || {}).visible || false"
-                          :autoAdjustOverflow="true"
-                          :getPopupContainer="getParentContainer"
-                        >
-
-                          <span
-                            @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                            @mouseout="()=>{handleMouseoutCommono(row,col)}">
-                            <a-upload
-                              name="file"
-                              :data="{'isup':1}"
-                              :multiple="false"
-                              :action="getUploadAction(col.action)"
-                              :headers="uploadGetHeaders(row,col)"
-                              :showUploadList="false"
-                              v-bind="buildProps(row,col)"
-                              @change="(v)=>handleChangeUpload(v,id,row,col)"
-                            >
-                              <a-button icon="upload">上传图片</a-button>
-                            </a-upload>
-                          </span>
+                        <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                          <a-upload
+                            name="file"
+                            :data="{'isup':1}"
+                            :multiple="false"
+                            :action="getUploadAction(col.action)"
+                            :headers="uploadGetHeaders(row,col)"
+                            :showUploadList="false"
+                            v-bind="buildProps(row,col)"
+                            @change="(v)=>handleChangeUpload(v,id,row,col)"
+                          >
+                            <a-button icon="upload">上传图片</a-button>
+                          </a-upload>
                         </a-tooltip>
                       </div>
 
                     </div>
                     <!-- update-end-author:taoyan date:0827 for：图片逻辑新增 -->
 
-
                     <!-- radio-begin -->
                     <template v-else-if="col.type === formTypes.radio">
-                      <a-tooltip
-                        :key="i"
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer"
-                      >
-
-                        <span
-                          @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                          @mouseout="()=>{handleMouseoutCommono(row,col)}">
-                          <a-radio-group
-                            :id="id"
-                            :key="i"
-                            v-bind="buildProps(row,col)"
-                            :value="radioValues[id]"
-                            @change="(e)=>handleRadioChange(e.target.value,id,row,col)">
-                            <a-radio v-for="(item, key) in col.options" :key="key" :value="item.value">{{ item.text }}</a-radio>
-                          </a-radio-group>
-                        </span>
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                        <a-radio-group
+                          :id="id"
+                          :key="i"
+                          v-bind="buildProps(row,col)"
+                          :value="radioValues[id]"
+                          @change="(e)=>handleRadioChange(e.target.value,id,row,col)">
+                          <a-radio v-for="(item, key) in col.options" :key="key" :value="item.value">{{ item.text }}</a-radio>
+                        </a-radio-group>
                       </a-tooltip>
                     </template>
                     <!-- radio-end -->
 
-
                     <!-- select多选 -begin -->
                     <template v-else-if="col.type === formTypes.list_multi">
-                      <a-tooltip
-                        :key="i"
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer"
-                      >
-
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                        <a-select
+                          v-if="isEditRow(row, col)"
+                          :id="id"
+                          :key="i"
+                          mode="multiple"
+                          :maxTagCount="1"
+                          v-bind="buildProps(row,col)"
+                          style="width: 100%;"
+                          :value="multiSelectValues[id]"
+                          :options="col.options"
+                          :getPopupContainer="getParentContainer"
+                          :placeholder="replaceProps(col, col.placeholder)"
+                          @change="(v)=>handleMultiSelectChange(v,id,row,col)"
+                          allowClear
+                        />
                         <span
-                          @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                          @mouseout="()=>{handleMouseoutCommono(row,col)}">
-
-                          <a-select
-                            :id="id"
-                            :key="i"
-                            mode="multiple"
-                            :maxTagCount="1"
-                            v-bind="buildProps(row,col)"
-                            style="width: 100%;"
-                            :value="multiSelectValues[id]"
-                            :options="col.options"
-                            :getPopupContainer="getParentContainer"
-                            :placeholder="replaceProps(col, col.placeholder)"
-                            @change="(v)=>handleMultiSelectChange(v,id,row,col)"
-                            allowClear>
-                          </a-select>
-                        </span>
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click="handleEditRow(row, col)"
+                        >{{ getSelectTranslateText(multiSelectValues[id], row, col) }} </span>
                       </a-tooltip>
                     </template>
                     <!-- select多选 -end -->
 
                     <!-- select搜索 -begin -->
                     <template v-else-if="col.type === formTypes.sel_search">
-                      <a-tooltip
-                        :key="i"
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer"
-                      >
-
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                        <a-select
+                          v-if="isEditRow(row, col)"
+                          :id="id"
+                          :key="i"
+                          showSearch
+                          optionFilterProp="children"
+                          :filterOption="filterOption"
+                          v-bind="buildProps(row,col)"
+                          style="width: 100%;"
+                          :value="searchSelectValues[id]"
+                          :options="col.options"
+                          :getPopupContainer="getParentContainer"
+                          :placeholder="replaceProps(col, col.placeholder)"
+                          @change="(v)=>handleSearchSelectChange(v,id,row,col)"
+                          allowClear
+                        />
                         <span
-                          @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                          @mouseout="()=>{handleMouseoutCommono(row,col)}">
-
-                          <a-select
-                            :id="id"
-                            :key="i"
-                            showSearch
-                            optionFilterProp="children"
-                            :filterOption="filterOption"
-                            v-bind="buildProps(row,col)"
-                            style="width: 100%;"
-                            :value="searchSelectValues[id]"
-                            :options="col.options"
-                            :getPopupContainer="getParentContainer"
-                            :placeholder="replaceProps(col, col.placeholder)"
-                            @change="(v)=>handleSearchSelectChange(v,id,row,col)"
-                            allowClear>
-                          </a-select>
-                        </span>
+                          v-else
+                          class="j-td-span no-edit"
+                          :class="{disabled: buildProps(row,col).disabled}"
+                          @click="handleEditRow(row, col)"
+                        >{{ getSelectTranslateText(searchSelectValues[id], row, col) }}</span>
                       </a-tooltip>
                     </template>
                     <!-- select搜索 -end -->
 
-
                     <div v-else-if="col.type === formTypes.slot" :key="i">
-                      <a-tooltip
-                        :key="i"
-                        :id="id"
-                        placement="top"
-                        :title="(tooltips[id] || {}).title"
-                        :visible="(tooltips[id] || {}).visible || false"
-                        :autoAdjustOverflow="true"
-                        :getPopupContainer="getParentContainer"
-                      >
-
-                        <span
-                          @mouseover="()=>{handleMouseoverCommono(row,col)}"
-                          @mouseout="()=>{handleMouseoutCommono(row,col)}">
-                            <slot
-                              :name="(col.slot || col.slotName) || col.key"
-                              :index="rowIndex"
-                              :text="slotValues[id]"
-                              :value="slotValues[id]"
-                              :column="col"
-                              :rowId="getCleanId(row.id)"
-                              :getValue="()=>_getValueForSlot(row.id)"
-                              :caseId="caseId"
-                              :allValues="_getAllValuesForSlot()"
-                              :target="getVM()"
-                              :handleChange="(v)=>handleChangeSlotCommon(v,id,row,col)"
-                              :isNotPass="notPassedIds.includes(col.key+row.id)"
-                            />
-                        </span>
+                      <a-tooltip v-bind="buildTooltipProps(row, col, id)">
+                        <slot
+                          :name="(col.slot || col.slotName) || col.key"
+                          :index="rowIndex"
+                          :text="slotValues[id]"
+                          :value="slotValues[id]"
+                          :column="col"
+                          :rowId="getCleanId(row.id)"
+                          :getValue="()=>_getValueForSlot(row.id)"
+                          :caseId="caseId"
+                          :allValues="_getAllValuesForSlot()"
+                          :target="getVM()"
+                          :handleChange="(v)=>handleChangeSlotCommon(v,id,row,col)"
+                          :isNotPass="notPassedIds.includes(col.key+row.id)"
+                        />
                       </a-tooltip>
                     </div>
 
@@ -698,7 +634,7 @@
               height: '32px'
             }"
           >
-            <div v-if="dragSort" class="td td-ds" :style="style.tdLeftDs">
+            <div v-if="dragSort" class="td td-ds" :style="style.tdLeft">
             </div>
             <div v-if="rowSelection" class="td td-cb" :style="style.tdLeft">
               统计
@@ -726,7 +662,7 @@
 
         </div>
       </div>
-      <j-file-pop ref="filePop" @ok="handleFileSuccess"></j-file-pop>
+      <j-file-pop ref="filePop" @ok="handleFileSuccess" :number="number"></j-file-pop>
     </div>
   </a-spin>
 </template>
@@ -736,12 +672,13 @@
   import Draggable from 'vuedraggable'
   import { ACCESS_TOKEN } from '@/store/mutation-types'
   import { FormTypes, VALIDATE_NO_PASSED } from '@/utils/JEditableTableUtil'
-  import { cloneObject, randomString, randomNumber } from '@/utils/util'
+  import { cloneObject, randomString, randomNumber, getEventPath } from '@/utils/util'
   import JDate from '@/components/jeecg/JDate'
-  import { initDictOptions } from '@/components/dict/JDictSelectUtil'
+  import { filterDictText, initDictOptions } from '@/components/dict/JDictSelectUtil'
   import { getFileAccessHttpUrl } from '@/api/manage';
   import JInputPop from '@/components/jeecg/minipop/JInputPop'
   import JFilePop from '@/components/jeecg/minipop/JFilePop'
+  import { getNoAuthCols } from "@/utils/authFilter"
 
   // 行高，需要在实例加载完成前用到
   let rowHeight = 61
@@ -787,7 +724,7 @@
         type: Boolean,
         default: false
       },
-      // 页面是否在加载中
+      // 表格内容区域最大高度
       maxHeight: {
         type: Number,
         default: 400
@@ -813,6 +750,16 @@
         type: String,
         default: 'orderNum'
       },
+      // 是否一直显示编辑框，如果为false则只有点击的时候才出现输入框
+      alwaysEdit: {
+        type: Boolean,
+        default: true
+      },
+      authPre: {
+        type: String,
+        required: false,
+        default: ''
+      },
     },
     data() {
       return {
@@ -821,7 +768,6 @@
         // 当前实例是否是行编辑
         isJEditableTable: true,
         // caseId，用于防止有多个实例的时候会冲突
-        caseIdPrefix: '_jet-',
         caseId: `_jet-${randomString(6)}-`,
         // 临时ID标识，凡是以该标识结尾的ID都是临时ID，不添加到数据库中
         tempId: `_tid-${randomString(6)}`,
@@ -835,8 +781,7 @@
           // 'max-height': '400px'
           tbody: { left: '0px' },
           // 左侧固定td的style
-          tdLeft: { 'min-width': '4%', 'max-width': '45px' },
-          tdLeftDs: { 'min-width': '30px', 'max-width': '35px' },
+          tdLeft: {},
         },
         // 表单的类型
         formTypes: FormTypes,
@@ -860,6 +805,10 @@
         uploadValues: {},
         //popup信息
         popupValues: {},
+        //部门组件信息
+        departCompValues:{},
+        //用户组件信息
+        userCompValues: {},
 
         radioValues: {},
         metaCheckboxValues: {},
@@ -881,6 +830,13 @@
         statisticsColumns: {},
         // 只有在行编辑被销毁时才主动清空GroupRequest的内存
         destroyCleanGroupRequest: false,
+        // 当前正在编辑的行的id
+        currentEditRows: {},
+        // 上次push数据的事件，用于判断是否点击过快
+        lastPushTimeMap: new Map(),
+        number:0,
+        //不显示的按钮编码
+        excludeCode:[]
       }
     },
     created() {
@@ -888,6 +844,13 @@
       // 当前显示的tr
       this.visibleTrEls = []
       this.disabledRowIds = (this.disabledRowIds || [])
+      // 解决火狐浏览器下拖拽会打开新的Tab的问题
+      document.body.ondrop = (event) => {
+        if (this.dragging) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
+      }
     },
     // 计算属性
     computed: {
@@ -982,6 +945,8 @@
       columns: {
         immediate: true,
         handler(columns) {
+          //列改变的时候重新设置按钮权限信息
+          this.loadExcludeCode()
           // 兼容IE
           this.getElementPromise('tbody').then(() => {
             columns.forEach(column => {
@@ -1033,6 +998,9 @@
 
       }
 
+      // 添加事件监听
+      this.addEventListener()
+
     },
     methods: {
 
@@ -1060,41 +1028,46 @@
         this.visibleTrEls = []
         // 判断是否是首次进入该方法，如果是就不清空行，防止删除了预添加的数据
         if (!this.isFirst) {
-          // inputValues：用来存储input表单的值
-          // 数组里的每项都是一个对象，对象里每个key都是input的rowKey，值就是input的值，其中有个id的字段来区分
-          // 示例：
-          // [{
-          //    id: "_jet-4sp0iu-15541771111770"
-          //    dbDefaultVal: "aaa",
-          //    dbFieldName: "bbb",
-          //    dbFieldTxt: "ccc",
-          //    dbLength: 32
-          // }]
-          this.inputValues = []
-          this.rows = []
-          this.deleteIds = []
-          this.selectValues = {}
-          this.checkboxValues = {}
-          this.jdateValues = {}
-          this.jInputPopValues = {}
-          this.slotValues = {}
-          this.selectedRowIds = []
-          this.tooltips = {}
-          this.notPassedIds = []
-          this.uploadValues = []
-          this.popupValues = []
-          this.radioValues = []
-          this.multiSelectValues = []
-          this.searchSelectValues = []
-          this.scrollTop = 0
-          this.$nextTick(() => {
-            this.getElement('tbody').scrollTop = 0
-          })
+         this.clearRow();
         } else {
           this.isFirst = false
         }
       },
-
+      /**清空行*/
+      clearRow(){
+        // inputValues：用来存储input表单的值
+        // 数组里的每项都是一个对象，对象里每个key都是input的rowKey，值就是input的值，其中有个id的字段来区分
+        // 示例：
+        // [{
+        //    id: "_jet-4sp0iu-15541771111770"
+        //    dbDefaultVal: "aaa",
+        //    dbFieldName: "bbb",
+        //    dbFieldTxt: "ccc",
+        //    dbLength: 32
+        // }]
+        this.inputValues = []
+        this.rows = []
+        this.deleteIds = []
+        this.selectValues = {}
+        this.checkboxValues = {}
+        this.jdateValues = {}
+        this.jInputPopValues = {}
+        this.departCompValues = {}
+        this.userCompValues = {}
+        this.slotValues = {}
+        this.selectedRowIds = []
+        this.tooltips = {}
+        this.notPassedIds = []
+        this.uploadValues = []
+        this.popupValues = []
+        this.radioValues = []
+        this.multiSelectValues = []
+        this.searchSelectValues = []
+        this.scrollTop = 0
+        this.$nextTick(() => {
+          this.getElement('tbody').scrollTop = 0
+        })
+      },
       /** 同步滚动条状态 */
       syncScrollBar(scrollLeft) {
         // this.style.tbody.left = `${scrollLeft}px`
@@ -1154,6 +1127,8 @@
         let checkboxValues = { ...this.checkboxValues }
         let selectValues = { ...this.selectValues }
         let jdateValues = { ...this.jdateValues }
+        let departCompValues = { ...this.departCompValues }
+        let userCompValues = { ...this.userCompValues }
         let jInputPopValues = { ...this.jInputPopValues }
         let slotValues = { ...this.slotValues }
         let uploadValues = { ...this.uploadValues }
@@ -1225,7 +1200,7 @@
               if (!sourceValueIsEmpty) {
                 // 判断是否是多选
                 if (typeof sourceValue === 'string' && (column.props || {})['mode'] === 'multiple') {
-                  sourceValue = sourceValue.split(',')
+                  sourceValue = sourceValue === '' ? [] : sourceValue.split(',')
                 }
                 selectValues[inputId] = sourceValue
               } else {
@@ -1240,6 +1215,10 @@
 
             } else if (column.type === FormTypes.popup) {
               popupValues[inputId] = sourceValue
+            } else if (column.type === FormTypes.sel_depart) {
+              departCompValues[inputId] = sourceValue
+            } else if (column.type === FormTypes.sel_user) {
+              userCompValues[inputId] = sourceValue
             } else if (column.type === FormTypes.input_pop) {
               jInputPopValues[inputId] = sourceValue
             } else if (column.type === FormTypes.radio) {
@@ -1300,6 +1279,12 @@
               this.inputValues.splice(insertIndex, 0, value)
             }
           }
+          //update-begin-author:lvdandan date:20201105 for:LOWCOD-987 【online】js增强的问题--数据对象带有id，且和现有数据一致时，替换患有数据
+          if(-1 !== rows.findIndex(item => item.id === row.id)){
+            added = true
+            this.inputValues = this.inputValues.map(item => item.id === row.id ? value : item)
+          }
+          //update-begin-author:lvdandan date:20201105 for:LOWCOD-987 【online】js增强的问题--数据对象带有id，且和现有数据一致时，替换患有数据
           if (!added) {
             rows.push(row)
             this.inputValues.push(value)
@@ -1315,6 +1300,8 @@
         this.checkboxValues = checkboxValues
         this.selectValues = selectValues
         this.jdateValues = jdateValues
+        this.departCompValues = departCompValues
+        this.userCompValues = userCompValues
         this.jInputPopValues = jInputPopValues
         this.slotValues = slotValues
         this.uploadValues = uploadValues
@@ -1330,7 +1317,7 @@
 
           // 更新form表单的值
           this.$nextTick(() => {
-            this.updateFormValues()
+            this.forceUpdateFormValues()
           })
         }
         return rows
@@ -1399,6 +1386,9 @@
        * @param num 添加的行数，默认1
        */
       insert(insertIndex, num = 1) {
+        if (this.checkTooFastClick('insert', 1500)) {
+          return
+        }
         if (!insertIndex && num < 1) return
         let rows = this.rows
         let newRows = []
@@ -1526,6 +1516,12 @@
 
             } else if (column.type === FormTypes.date || column.type === FormTypes.datetime) {
               value[column.key] = this.jdateValues[inputId]
+
+            } else if (column.type === FormTypes.sel_depart) {
+              value[column.key] = this.departCompValues[inputId]
+
+            } else if (column.type === FormTypes.sel_user) {
+              value[column.key] = this.userCompValues[inputId]
 
             } else if (column.type === FormTypes.input_pop) {
               value[column.key] = this.jInputPopValues[inputId]
@@ -1666,6 +1662,8 @@
           selectValues: this.selectValues,
           checkboxValues: this.checkboxValues,
           jdateValues: this.jdateValues,
+          departCompValues: this.departCompValues,
+          userCompValues: this.userCompValues,
           jInputPopValues: this.jInputPopValues,
           slotValues: this.slotValues,
           uploadValues: this.uploadValues,
@@ -1683,61 +1681,72 @@
           rowKey = this.getCleanId(rowKey)
           for (let newValueKey in newValues) {
             if (newValues.hasOwnProperty(newValueKey)) {
-              let newValue = newValues[newValueKey]
               let edited = false // 已被修改
-              this.inputValues.forEach(value => {
-                // 在inputValues中找到了该字段
-                if (rowKey === this.getCleanId(value.id)) {
-                  if (value.hasOwnProperty(newValueKey)) {
-                    edited = true
-                    value[newValueKey] = newValue
+              for (let column of this.columns) {
+                if (column.key === newValueKey) {
+                  let newValue = newValues[newValueKey]
+                  this.inputValues.forEach(value => {
+                    // 在inputValues中找到了该字段
+                    if (rowKey === this.getCleanId(value.id)) {
+                      if (value.hasOwnProperty(newValueKey)) {
+                        edited = true
+                        value[newValueKey] = newValue
+                      }
+                    }
+                  })
+                  if (!edited) {
+                    let modelKey = `${newValueKey}${this.caseId}${rowKey}`
+                    if (column.type === FormTypes.select) {
+                      if (newValue !== 0 && !newValue) {
+                        edited = this.setOneValue(this.selectValues, modelKey, undefined)
+                      } else {
+                        edited = this.setOneValue(this.selectValues, modelKey, newValue)
+                      }
+                    } else if (column.type === FormTypes.checkbox) {
+                      // checkbox 特殊处理 CustomValue
+                      let key = this.valuesHasOwnProperty(this.checkboxValues, modelKey)
+                      // 找到对应的column
+                      let sourceValue
+                      // 判断是否设定了customValue（自定义值）
+                      if (column.customValue instanceof Array) {
+                        let customValue = (column.customValue[0] || '').toString()
+                        sourceValue = (newValue === customValue)
+                      } else {
+                        sourceValue = !!newValue
+                      }
+                      this.$set(this.checkboxValues, key, sourceValue)
+                      edited = true
+                    } else if (column.type === FormTypes.date || column.type === FormTypes.datetime) {
+                      edited = this.setOneValue(this.jdateValues, modelKey, newValue)
+                    } else if (column.type === FormTypes.sel_depart) {
+                      edited = this.setOneValue(this.departCompValues, modelKey, newValue)
+                    } else if (column.type === FormTypes.sel_user) {
+                      edited = this.setOneValue(this.userCompValues, modelKey, newValue)
+                    } else if (column.type === FormTypes.input_pop) {
+                      edited = this.setOneValue(this.jInputPopValues, modelKey, newValue)
+                    } else if (column.type === FormTypes.slot) {
+                      edited = this.setOneValue(this.slotValues, modelKey, newValue)
+                    } else if (column.type === FormTypes.upload || column.type === FormTypes.image || column.type === FormTypes.file) {
+                      edited = this.setOneValue(this.uploadValues, modelKey, newValue)
+                    } else if (column.type === FormTypes.popup) {
+                      edited = this.setOneValue(this.popupValues, modelKey, newValue)
+                    } else if (column.type === FormTypes.radio) {
+                      edited = this.setOneValue(this.radioValues, modelKey, newValue)
+                    } else if (column.type === FormTypes.list_multi) {
+                      edited = this.setOneValue(this.multiSelectValues, modelKey, newValue, true)
+                    } else if (column.type === FormTypes.sel_search) {
+                      edited = this.setOneValue(this.searchSelectValues, modelKey, newValue)
+                    } else {
+                      edited = false
+                    }
+                  }
+                  if (edited) {
+                    this.elemValueChange(column.type, {[newValueKey]: newValue}, column, newValue)
                   }
                 }
-              })
-              let modelKey = `${newValueKey}${this.caseId}${rowKey}`
-              // 在 selectValues 中寻找值
-              if (!edited) {
-                if (newValue !== 0 && !newValue) {
-                  edited = this.setOneValue(this.selectValues, modelKey, undefined)
-                } else {
-                  edited = this.setOneValue(this.selectValues, modelKey, newValue)
-                }
               }
-              // 在 checkboxValues 中寻找值
               if (!edited) {
-                edited = this.setOneValue(this.checkboxValues, modelKey, newValue)
-              }
-              // 在 jdateValues 中寻找值
-              if (!edited) {
-                edited = this.setOneValue(this.jdateValues, modelKey, newValue)
-              }
-              // 在 jInputPopValues 中寻找值
-              if (!edited) {
-                edited = this.setOneValue(this.jInputPopValues, modelKey, newValue)
-              }
-              // 在 slotValues 中寻找值
-              if (!edited) {
-                edited = this.setOneValue(this.slotValues, modelKey, newValue)
-              }
-              // 在 uploadValues 中寻找值
-              if (!edited) {
-                edited = this.setOneValue(this.uploadValues, modelKey, newValue)
-              }
-              // 在 popupValues 中寻找值
-              if (!edited) {
-                edited = this.setOneValue(this.popupValues, modelKey, newValue)
-              }
-              // 在 radioValues 中寻找值
-              if (!edited) {
-                edited = this.setOneValue(this.radioValues, modelKey, newValue)
-              }
-              // 在 multiSelectValues 中寻找值
-              if (!edited) {
-                edited = this.setOneValue(this.multiSelectValues, modelKey, newValue)
-              }
-              // 在 searchSelectValues 中寻找值
-              if (!edited) {
-                edited = this.setOneValue(this.searchSelectValues, modelKey, newValue)
+                console.warn(`JEditableTable.setValues：没有找到"${newValueKey}"列`)
               }
             }
           }
@@ -1745,9 +1754,21 @@
         // 强制更新formValues
         this.forceUpdateFormValues()
       },
-      setOneValue(valuesObject, modelKey, value) {
+      /**
+       * 设置单个组件的值
+       * @param valuesObject 组件存储值的对象
+       * @param modelKey 组件存储值的对象里的key
+       * @param value 新值
+       * @param isMultiple 是否多选，如果是就会对 value 进行一个 split(',') 的操作
+       */
+      setOneValue(valuesObject, modelKey, value, isMultiple = false) {
         let key = this.valuesHasOwnProperty(valuesObject, modelKey)
         if (key) {
+          // 处理多选数组
+          if (isMultiple && !Array.isArray(value)) {
+            value = (value || '').toString().trim()
+            value = value === '' ? [] : value.split(',')
+          }
           this.$set(valuesObject, key, value)
           return true
         }
@@ -1802,35 +1823,11 @@
             tooltips[inputId].visible = !passed
             tooltips[inputId].passed = passed
             let index = notPassedIds.indexOf(inputId)
-            let borderColor = null, boxShadow = null
             if (!passed) {
               tooltips[inputId].title = this.replaceProps(column, message)
-              borderColor = 'red'
-              boxShadow = `0 0 0 2px rgba(255, 0, 0, 0.2)`
               if (index === -1) notPassedIds.push(inputId)
             } else {
               if (index !== -1) notPassedIds.splice(index, 1)
-            }
-
-            let element = document.getElementById(inputId)
-            if (element != null) {
-              // select 在 .ant-select-selection 上设置 border-color
-              if (column.type === FormTypes.select) {
-                element = element.getElementsByClassName('ant-select-selection')[0]
-              }
-              // jdate 在 input 上设置 border-color
-              if (column.type === FormTypes.date || column.type === FormTypes.datetime) {
-                element = element.getElementsByTagName('input')[0]
-              }
-              // upload 在 .ant-upload .ant-btn 上设置 border-color
-              if (column.type === FormTypes.upload || column.type === FormTypes.file || column.type === FormTypes.image) {
-                element = element.getElementsByClassName('ant-upload')[0].getElementsByClassName('ant-btn')[0]
-              }
-              element.style.borderColor = borderColor
-              element.style.boxShadow = boxShadow
-              if (element.tagName === 'SPAN') {
-                element.style.display = 'block'
-              }
             }
           }
           // 是否更新到data
@@ -1854,7 +1851,7 @@
               message = msg
             }
             if (flag == null) {
-              nextThen([null, message])
+              nextThen([true, message])
             } else {
               nextThen([!!flag, message])
             }
@@ -1901,7 +1898,7 @@
 
               // 兼容 online 的规则
               let foo = [
-                { title: '6到16位数字', value: 'n6-16', pattern: /^\d{6,18}$/ },
+                { title: '6到16位数字', value: 'n6-16', pattern: /^\d{6,16}$/ },
                 { title: '6到16位任意字符', value: '*6-16', pattern: /^.{6,16}$/ },
                 { title: '6到18位字母', value: 's6-18', pattern: /^[a-z|A-Z]{6,18}$/ },
                 { title: '网址', value: 'url', pattern: /^(?:([A-Za-z]+):)?(\/{0,3})([0-9.\-A-Za-z]+)(?::(\d+))?(?:\/([^?#]*))?(?:\?([^#]*))?(?:#(.*))?$/ },
@@ -1981,7 +1978,8 @@
       /** 强制更新FormValues */
       forceUpdateFormValues() {
         this.visibleTrEls = []
-        this.updateFormValues()
+        this.$forceUpdate()
+        this.$nextTick(() => this.updateFormValues())
       },
 
       // 重新计算所有统计列
@@ -2189,18 +2187,6 @@
 
       /* --- common function begin --- */
 
-      /** 鼠标移入 */
-      handleMouseoverCommono(row, column) {
-        let inputId = column.key + row.id
-        if (this.notPassedIds.indexOf(inputId) !== -1) {
-          this.showOrHideTooltip(inputId, true, true)
-        }
-      },
-      /** 鼠标移出 */
-      handleMouseoutCommono(row, column) {
-        let inputId = column.key + row.id
-        this.showOrHideTooltip(inputId, false)
-      },
       /** input事件 */
       handleInputCommono(target, index, row, column) {
         let oldValue = this.inputValues[index][column.key] || ''
@@ -2253,8 +2239,12 @@
           }
           target.value = value
         }
-        // 做单个表单验证
-        this.validateOneInput(value, row, column, this.notPassedIds, true, 'blur')
+        //update--begin--autor:lvdandan-----date:20201126------for：LOWCOD-1088 JEditableTable输入校验提示框位置偏移 #2005
+        setTimeout(()=>{
+          // 做单个表单验证
+          this.validateOneInput(value, row, column, this.notPassedIds, true, 'blur')
+        }, 100)
+        //update--end--autor:lvdandan-----date:20201126------for：LOWCOD-1088 JEditableTable输入校验提示框位置偏移 #2005
       },
       handleChangeCheckboxCommon(event, row, column) {
         let { id, checked } = event.target
@@ -2282,6 +2272,20 @@
           this.elemValueChange(FormTypes.date, row, column, value)
         }
       },
+      //部门组件值改变
+      handleChangeDepartCommon(value, id, row, column){
+        this.departCompValues = this.bindValuesChange(value, id, 'departCompValues')
+        this.validateOneInput(value, row, column, this.notPassedIds, true, 'change')
+        // 触发valueChange 事件
+        this.elemValueChange(FormTypes.sel_depart, row, column, value)
+      },
+      //用户组件值改变
+      handleChangeUserCommon(value, id, row, column){
+        this.userCompValues = this.bindValuesChange(value, id, 'userCompValues')
+        this.validateOneInput(value, row, column, this.notPassedIds, true, 'change')
+        // 触发valueChange 事件
+        this.elemValueChange(FormTypes.sel_user, row, column, value)
+      },
       handleChangeJInputPopCommon(value, id, row, column){
         this.jInputPopValues = this.bindValuesChange(value, id, 'jInputPopValues')
         // 做单个表单验证
@@ -2307,8 +2311,22 @@
           value['message'] = file.response.message || '未知错误'
         }
         this.uploadValues = this.bindValuesChange(value, id, 'uploadValues')
+
+        // 触发valueChange 事件
+        this.elemValueChange(column.type, row, column, value)
       },
-      handleMoreOperation(id,flag){
+      handleMoreOperation(id,flag,column){
+        //update-begin-author:wangshuai date:20201021 for:LOWCOD-969 判断传过来的字段是否存在number，用于控制上传文件
+        if(column.number){
+          this.number = column.number;
+        }else{
+          this.number = 0;
+        }
+        //update-end-author:wangshuai date:20201021 for:LOWCOD-969 判断传过来的字段是否存在number，用于控制上传文件
+        if(column && column.fieldExtendJson){
+          let json = JSON.parse(column.fieldExtendJson);
+          this.number = json.uploadnum?json.uploadnum:0;
+        }
         //console.log("this.uploadValues[id]",this.uploadValues[id])
         let path = ''
         if(this.uploadValues && this.uploadValues[id]){
@@ -2321,26 +2339,39 @@
           this.uploadValues = this.bindValuesChange(obj, obj.id, 'uploadValues')
         }
       },
-      /** 记录用到数据绑定的组件的值 */
-      bindValuesChange(value, id, key) {
-        // let values = Object.assign({}, this[key])
-        // values[id] = value
-        // return values
-        this.$set(this[key], id, value)
-        return this[key]
+      handleClickTableRow(event) {
+        let {target} = event
+        if (target.className === 'td' || target.className === 'tr') {
+          // 清空编辑状态
+          this.currentEditRows = {}
+        }
       },
-
-      /** 显示或隐藏tooltip */
-      showOrHideTooltip(inputId, show, force = false) {
-        if (!this.tooltips[inputId] && !force) {
+      // 点击后编辑当前行
+      handleEditRow(row, col) {
+        if (this.alwaysEdit) {
           return
         }
-
-        let tooltip = this.tooltips[inputId] || {}
-        if (tooltip.visible !== show) {
-          tooltip.visible = show
-          this.$set(this.tooltips, inputId, tooltip)
+        // 将点击的组件置为可编辑并还原其他组件的编辑状态
+        this.currentEditRows = {
+          [row.id]: {
+            [col.key]: true
+          }
         }
+        if (col.type === FormTypes.input || col.type === FormTypes.inputNumber) {
+          this.$nextTick(() => {
+            this.forceUpdateFormValues()
+            // 自动获取焦点
+            let el = document.getElementById(`${col.key}${row.id}`)
+            if (el) {
+              el.focus()
+            }
+          })
+        }
+      },
+      /** 记录用到数据绑定的组件的值 */
+      bindValuesChange(value, id, key) {
+        this.$set(this[key], id, value)
+        return this[key]
       },
 
       /** value 触发valueChange事件 */
@@ -2424,10 +2455,11 @@
           if (res.success) {
             let newOptions = (column.options || [])// .concat(res.result)
             res.result.forEach(item => {
+              // 过滤重复数据
               for (let option of newOptions) if (option.value === item.value) return
               newOptions.push(item)
             })
-            column.options = newOptions
+            this.$set(column, 'options', newOptions)
           } else {
             console.group(`JEditableTable 查询字典(${column.dictCode})发生异常`)
             console.log(res.message)
@@ -2449,6 +2481,27 @@
 
       getVM() {
         return this
+      },
+
+      /** 辅助方法：动态构造Tooltip的Props，防止出现不消失的情况 */
+      buildTooltipProps(row, col, id) {
+        let {notPassedIds, tooltips} = this
+        let props = {
+          title: (tooltips[id] || {}).title,
+          placement: 'top',
+          autoAdjustOverflow: true,
+          getPopupContainer: this.getParentContainer,
+          class: {
+            'j-check-failed': false
+          },
+        }
+        let isCheckFailed = notPassedIds.includes(id)
+        if (isCheckFailed) {
+          props.class['j-check-failed'] = true
+        } else {
+          props['visible'] = false
+        }
+        return props
       },
 
       /** 辅助方法：指定a-select 和 j-data 的父容器 */
@@ -2524,6 +2577,19 @@
         } else {
           style['width'] = '120px'
         }
+        //update-begin-author:lvdandan date:20201116 for:LOWCOD-984 默认风格功能测试附表样式问题 日期时间控件长度太大
+        //如果是时间控件设为200px
+        if(col.type === FormTypes.datetime){
+          style['width'] = '200px'
+        }
+        if(col.type === FormTypes.sel_user && !col.width){
+          style['width'] = '220px'
+        }
+        if(col.type === FormTypes.sel_depart && !col.width){
+          style['width'] = '160px'
+        }
+        //update-end-author:lvdandan date:20201116 for:LOWCOD-984 默认风格功能测试附表样式问题 日期时间控件长度太大
+
         // checkbox 居中显示
         let isCheckbox = col.type === FormTypes.checkbox
         if (isCheckbox) {
@@ -2569,6 +2635,25 @@
 
         return props
       },
+
+      /** 辅助方法：防止过快点击，如果点击过快的话就返回 true */
+      checkTooFastClick(key = 'default', ms = 300) {
+        let nowTime = Date.now()
+        let lastTime = this.lastPushTimeMap.get(key)
+        if (!lastTime) {
+          lastTime = nowTime
+          this.lastPushTimeMap.set(key, nowTime)
+          return false
+        }
+        let diffTime = nowTime - lastTime
+        if (diffTime <= ms) {
+          this.$message.warn('你点击的太快了，请慢点点击!')
+          return true
+        }
+        this.lastPushTimeMap.set(key, nowTime)
+        return false
+      },
+
       /** upload 辅助方法：获取 headers */
       uploadGetHeaders(row, column) {
         let headers = {}
@@ -2601,31 +2686,27 @@
       /** popup回调 */
       popupCallback(value, others, id, row, column, index) {
         // 存储输入的值
-        this.popupValues[id] = value
+        let popupValue = value
         if (others) {
-          Object.keys(others).map((key) => {
-            this.columns.map(k=>{
-              if(k.key === key){
-                let tempId = id.substring(id.indexOf(this.caseIdPrefix))
-                if(k.type === 'date'){
-                  this.handleChangeJDateCommon(others[key], key+tempId, {id:tempId}, k, false)
-                }else if(k.type === 'datetime'){
-                  this.handleChangeJDateCommon(others[key], key+tempId, {id:tempId}, k, true)
-                }else{
-                  this.inputValues[index][key] = others[key]
-                }
-              }
-            })
+          let rowKey = this.getCleanId(row.id)
+          let setValueItem = {rowKey, values: {}}
+          Object.keys(others).forEach(key => {
+            // 当前列直接赋值，其他列通过setValues赋值
+            if (key === column.key) {
+              popupValue = others[key]
+            } else {
+              setValueItem.values[key] = others[key]
+            }
           })
+          if (Object.keys(setValueItem).length > 0) {
+            this.setValues([setValueItem])
+          }
         }
+        this.setOneValue(this.popupValues, id, popupValue)
         // 做单个表单验证
         this.validateOneInput(value, row, column, this.notPassedIds, true, 'change')
         // 触发valueChange 事件
         this.elemValueChange('input', row, column, value)
-        // 更新form表单的值
-        this.$nextTick(() => {
-          this.forceUpdateFormValues()
-        })
       },
       /** popup输入框回显 */
       getPopupValue(id) {
@@ -2654,19 +2735,123 @@
         return option.componentOptions.children[0].text.toLowerCase().indexOf(input.toLowerCase()) >= 0
       },
       getEllipsisWord(content, len){
-        if(!content || content.length==0){
+        if(!content || content.length === 0){
           return ''
         }
         if(content.length>len){
           return content.substr(0,len)
         }
         return content;
+      },
+
+      /* --------------------------- 2020年5月18日 默认span模式 ------------------------------ */
+
+      /** 获取Select等组件翻译后的文本 */
+      getSelectTranslateText(value, row, col) {
+        // 翻译支持单选和多选（数组、逗号分割）
+        return filterDictText(col.options, value)
+      },
+
+      // 判定当前行是否是正在编辑的
+      isEditRow(row, col) {
+        if (this.alwaysEdit) {
+          return true
+        }
+        let current = this.currentEditRows[row.id]
+        return !!(current && current[col.key] === true)
+      },
+
+      /* ---- 事件监听 ---- */
+
+      // 鼠标弹起事件，用于清空输入状态
+      handleMouseup(event) {
+        if (this.alwaysEdit || Object.keys(this.currentEditRows).length === 0) {
+          return
+        }
+        // console.log(this.caseId + 'handleMouseup: ', event)
+        let {target} = event
+        if (!target){
+          return
+        }
+        let className = target.className || ''
+        if (typeof className === 'string') {
+          // 点击的标签是span
+          if (className.includes('j-td-span') && className.includes('no-edit')) {
+            return
+          }
+          // 点击的标签是下拉
+          if (className.includes('ant-select-dropdown-menu-item')) {
+            return
+          }
+        }
+
+        // 事件冒泡路径
+        let path = getEventPath(event)
+        for (let p of path) {
+          // 如果点击的是 tr 就不处理（tr单独处理）
+          if ((p.id || '').startsWith(`${this.caseId}tbody-tr`)) {
+            return
+          }
+          let pClassName = p.className || ''
+          pClassName = typeof pClassName === 'string' ? pClassName : pClassName.toString()
+
+          /* --- 特殊处理以下组件，点击以下标签时不清空编辑状态 --- */
+
+          // 点击的标签是JInputPop
+          if (pClassName.includes('j-input-pop')) {
+            return
+          }
+          // 点击的标签是JPopup的弹出层
+          if (pClassName.includes('j-popup-modal')) {
+            return
+          }
+          // 点击的标签是日期选择器的弹出层
+          if (pClassName.includes('j-date-picker') || pClassName.includes('ant-calendar-picker-container')) {
+            return
+          }
+
+        }
+        // 清空编辑状态
+        this.currentEditRows = {}
+      },
+
+      // 添加事件监听
+      addEventListener() {
+        window.addEventListener('mouseup', this.handleMouseup)
+      },
+      // 移除事件监听
+      removeEventListener() {
+        window.removeEventListener('mouseup', this.handleMouseup)
+      },
+      /* --------------------------- 2020年5月18日 默认span模式 ------------------------------ */
+
+      //获取没有授权的按钮编码
+      loadExcludeCode(){
+        if(!this.authPre || this.authPre.length==0){
+          this.excludeCode = []
+        }else{
+          let pre = this.authPre
+          if(!pre.endsWith(':')){
+            pre += ':'
+          }
+          this.excludeCode = getNoAuthCols(pre)
+        }
+      },
+      //判断button是否显示
+      buttonPermission(code){
+        if(!this.excludeCode || this.excludeCode.length==0){
+          return true
+        }else{
+          return this.excludeCode.indexOf(code)<0
+        }
       }
 
     },
     beforeDestroy() {
+      this.removeEventListener()
       this.destroyCleanGroupRequest = true
-    },
+    }
+
   }
 </script>
 
@@ -2711,8 +2896,9 @@
         flex-direction: column;
 
         &.td-cb, &.td-num {
-          min-width: 4%;
-          max-width: 45px;
+          width: 45px;
+          min-width: 45px;
+          max-width: 50px;
           margin-right: 0;
           padding-left: 0;
           padding-right: 0;
@@ -2721,6 +2907,9 @@
         }
 
         &.td-ds {
+          width: 30px;
+          min-width: 30px;
+          max-width: 35px;
           margin-right: 0;
           padding-left: 0;
           padding-right: 0;
@@ -2901,6 +3090,73 @@
           }
 
         }
+
+        /* --------------------------- 2020年5月18日 begin 默认span模式 ------------------------------ */
+
+        label {
+          height: 32px;
+
+          &.ant-checkbox-wrapper {
+            height: auto;
+          }
+        }
+
+        .j-td-span {
+          position: relative;
+          padding: 4px 11px;
+          border: 1px solid transparent;
+          display: inline-block;
+          width: 100%;
+          max-width: 100%;
+          height: 32px;
+          cursor: text;
+          transition: all 0.3s;
+          box-sizing: border-box;
+          font-size: 14px;
+          line-height: 1.5;
+          color: rgba(0, 0, 0, 0.65);
+          border-radius: 4px;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+
+          &:hover {
+            background-color: white;
+          }
+
+          &.disabled {
+            cursor: not-allowed;
+
+            &:hover {
+              color: rgba(0, 0, 0, 0.25);
+              background-color: #F5F5F5;
+            }
+          }
+
+        }
+
+        /* --------------------------- 2020年5月18日 end 默认span模式 ------------------------------ */
+
+        /* --------------------------- 2020年5月28日 begin 新增校验未通过的样式 ------------------------------ */
+
+        .j-check-failed.j-td-span {
+          background-color: rgba(255, 0, 0, 0.05);
+
+          &:hover {
+            background-color: rgba(255, 0, 0, 0.1);
+          }
+        }
+
+        .j-check-failed.j-td-span,
+        input.j-check-failed,
+        .j-check-failed /deep/ input,
+        .ant-select.j-check-failed /deep/ .ant-select-selection,
+        .ant-upload.j-check-failed /deep/ .ant-btn {
+          border-color: red;
+          box-shadow: 0 0 0 2px rgba(255, 0, 0, 0.2);
+        }
+
+        /* --------------------------- 2020年5月28日 end 新增校验未通过的样式 ------------------------------ */
 
       }
 
